@@ -1,11 +1,335 @@
-html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Wayfare Paris</title>
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.jsx"></script>
-  </body>
-</html>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Wayfare — Paris, drawn as one line</title>
+<meta name="description" content="Pick your Paris stops. We route them into a day and find the hotel closest to your itinerary." />
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap');
+  * { box-sizing: border-box; }
+  body { margin: 0; }
+</style>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-type="module">
+const { useState, useMemo, useEffect } = React;
+
+// ---------- Fallback data (Paris) ----------
+const FALLBACK_ATTRACTIONS = [
+  { id: "a1", name: "Louvre Museum", hood: "1st — Louvre", lat: 48.8606, lng: 2.3376, tag: "Art", hrs: "3h" },
+  { id: "a2", name: "Notre-Dame", hood: "4th — Île de la Cité", lat: 48.8530, lng: 2.3499, tag: "Landmark", hrs: "1h" },
+  { id: "a3", name: "Eiffel Tower", hood: "7th — Gros-Caillou", lat: 48.8584, lng: 2.2945, tag: "Landmark", hrs: "2h" },
+  { id: "a4", name: "Montmartre & Sacré-Cœur", hood: "18th — Montmartre", lat: 48.8867, lng: 2.3431, tag: "Views", hrs: "2.5h" },
+  { id: "a5", name: "Musée d'Orsay", hood: "7th — Faubourg", lat: 48.8600, lng: 2.3266, tag: "Art", hrs: "2h" },
+  { id: "a6", name: "Le Marais", hood: "3rd/4th — Marais", lat: 48.8575, lng: 2.3623, tag: "Food & Shops", hrs: "2h" },
+  { id: "a7", name: "Luxembourg Gardens", hood: "6th — St-Germain", lat: 48.8462, lng: 2.3372, tag: "Park", hrs: "1h" },
+  { id: "a8", name: "Canal Saint-Martin", hood: "10th — Canal", lat: 48.8709, lng: 2.3644, tag: "Local Life", hrs: "1.5h" },
+];
+
+const HOTELS = [
+  { id: "h1", name: "Hôtel du Petit Louvre", hood: "1st", lat: 48.8618, lng: 2.3389, price: 145, tier: "Mid", rating: 8.6 },
+  { id: "h2", name: "Auberge Île Saint-Louis", hood: "4th", lat: 48.8514, lng: 2.3565, price: 89, tier: "Budget", rating: 8.1 },
+  { id: "h3", name: "Le Tour Eiffel Boutique", hood: "7th", lat: 48.8551, lng: 2.2980, price: 210, tier: "Luxury", rating: 9.1 },
+  { id: "h4", name: "Montmartre Charme", hood: "18th", lat: 48.8842, lng: 2.3389, price: 98, tier: "Budget", rating: 8.3 },
+  { id: "h5", name: "Hôtel des Arts Orsay", hood: "7th", lat: 48.8583, lng: 2.3227, price: 175, tier: "Mid", rating: 8.8 },
+  { id: "h6", name: "Marais Loft Suites", hood: "3rd", lat: 48.8601, lng: 2.3612, price: 160, tier: "Mid", rating: 8.7 },
+  { id: "h7", name: "St-Germain Residence", hood: "6th", lat: 48.8489, lng: 2.3341, price: 230, tier: "Luxury", rating: 9.3 },
+  { id: "h8", name: "Canal View Hostel", hood: "10th", lat: 48.8720, lng: 2.3660, price: 55, tier: "Budget", rating: 7.9 },
+];
+
+const TIER_COLOR = { Budget: "#6FBF9A", Mid: "#C89B4A", Luxury: "#D97A63" };
+
+// ---------- Monetization config ----------
+// 1. Sign up free at partner.booking.com
+// 2. Find your affiliate ID (aid) in the Partner Hub dashboard
+// 3. Paste it below — every "Check rates" click will then earn commission
+const BOOKING_AFFILIATE_ID = "YOUR_AID_HERE";
+
+function buildBookingLink(hotelName) {
+  const params = new URLSearchParams({
+    ss: `${hotelName} Paris`,
+    aid: BOOKING_AFFILIATE_ID,
+    label: "wayfare-paris",
+  });
+  return `https://www.booking.com/searchresults.html?${params.toString()}`;
+}
+
+// ---------- Live attraction data (OpenStreetMap Overpass API — free, no key) ----------
+const PARIS_BBOX = "48.833,2.25,48.90,2.42";
+
+const TAG_LABELS = { museum: "Art", attraction: "Landmark", artwork: "Landmark", gallery: "Art", viewpoint: "Views", park: "Park", monument: "Landmark" };
+const DURATION_BY_TAG = { museum: "2h", attraction: "1h", artwork: "0.5h", gallery: "1.5h", viewpoint: "1h", park: "1h", monument: "1h" };
+
+async function fetchLiveAttractions() {
+  const query = `
+    [out:json][timeout:20];
+    (
+      node["tourism"="attraction"](${PARIS_BBOX});
+      node["tourism"="museum"](${PARIS_BBOX});
+      node["tourism"="artwork"](${PARIS_BBOX});
+      node["tourism"="viewpoint"](${PARIS_BBOX});
+      node["historic"="monument"](${PARIS_BBOX});
+    );
+    out body 40;
+  `;
+  const res = await fetch("https://overpass-api.de/api/interpreter", { method: "POST", body: query });
+  if (!res.ok) throw new Error("Overpass request failed");
+  const data = await res.json();
+
+  const seenNames = new Set();
+  const results = [];
+  for (const el of data.elements || []) {
+    const name = el.tags && el.tags.name;
+    if (!name || seenNames.has(name)) continue;
+    if (!el.lat || !el.lon) continue;
+    seenNames.add(name);
+    const tagKey = el.tags.tourism || el.tags.historic || "attraction";
+    results.push({
+      id: `osm-${el.id}`,
+      name,
+      hood: el.tags["addr:suburb"] || el.tags["addr:city"] || "Paris",
+      lat: el.lat,
+      lng: el.lon,
+      tag: TAG_LABELS[tagKey] || "Landmark",
+      hrs: DURATION_BY_TAG[tagKey] || "1h",
+    });
+    if (results.length >= 14) break;
+  }
+  if (results.length < 3) throw new Error("Not enough live results");
+  return results;
+}
+
+function project(points, w, h, pad) {
+  const lats = points.map((p) => p.lat);
+  const lngs = points.map((p) => p.lng);
+  const minLat = Math.min(...lats), maxLat = Math.max(...lats);
+  const minLng = Math.min(...lngs), maxLng = Math.max(...lngs);
+  return points.map((p) => ({
+    ...p,
+    x: pad + ((p.lng - minLng) / (maxLng - minLng || 1)) * (w - pad * 2),
+    y: h - pad - ((p.lat - minLat) / (maxLat - minLat || 1)) * (h - pad * 2),
+  }));
+}
+
+function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+
+function orderRoute(points) {
+  if (points.length <= 2) return points;
+  const remaining = [...points];
+  const route = [remaining.shift()];
+  while (remaining.length) {
+    const last = route[route.length - 1];
+    let bestIdx = 0, bestDist = Infinity;
+    remaining.forEach((p, i) => {
+      const d = dist(last, p);
+      if (d < bestDist) { bestDist = d; bestIdx = i; }
+    });
+    route.push(remaining.splice(bestIdx, 1)[0]);
+  }
+  return route;
+}
+
+const W = 640, H = 520, PAD = 56;
+
+function App() {
+  const [selected, setSelected] = useState([]);
+  const [tierFilter, setTierFilter] = useState("All");
+  const [attractions, setAttractions] = useState(FALLBACK_ATTRACTIONS);
+  const [dataStatus, setDataStatus] = useState("loading");
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchLiveAttractions()
+      .then((live) => {
+        if (cancelled) return;
+        setAttractions(live);
+        setDataStatus("live");
+        setSelected(live.slice(0, 3).map((a) => a.id));
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setAttractions(FALLBACK_ATTRACTIONS);
+        setDataStatus("fallback");
+        setSelected(["a1", "a3", "a4"]);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  const toggle = (id) => setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
+
+  const allProjected = useMemo(() => project(attractions, W, H, PAD), [attractions]);
+  const hotelsProjected = useMemo(() => project(HOTELS, W, H, PAD), []);
+
+  const routePoints = useMemo(() => {
+    const picked = allProjected.filter((p) => selected.includes(p.id));
+    return orderRoute(picked);
+  }, [selected, allProjected]);
+
+  const totalHrs = routePoints.reduce((sum, p) => sum + parseFloat(p.hrs), 0);
+
+  const suggestions = useMemo(() => {
+    const pool = tierFilter === "All" ? hotelsProjected : hotelsProjected.filter((h) => h.tier === tierFilter);
+    const seen = new Set();
+    const out = [];
+    routePoints.forEach((stop) => {
+      let best = null, bestD = Infinity;
+      pool.forEach((h) => {
+        if (seen.has(h.id)) return;
+        const d = dist(stop, h);
+        if (d < bestD) { bestD = d; best = h; }
+      });
+      if (best) { seen.add(best.id); out.push({ stop, hotel: best }); }
+    });
+    return out;
+  }, [routePoints, tierFilter, hotelsProjected]);
+
+  const pathD = routePoints.length > 1 ? "M " + routePoints.map((p) => `${p.x} ${p.y}`).join(" L ") : "";
+
+  return (
+    <div style={{ fontFamily: "Inter, sans-serif", background: "#0D211C", minHeight: "100vh", color: "#F4ECDA" }}>
+      <header style={{ padding: "48px 24px 32px", borderBottom: "1px solid #1B3830", background: "linear-gradient(180deg, #122A24 0%, #0D211C 100%)" }}>
+        <div style={{ maxWidth: 1040, margin: "0 auto" }}>
+          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12, letterSpacing: 3, color: "#6FBF9A", marginBottom: 10 }}>
+            LIGNE&nbsp;1 · WAYPOINT PLANNER
+          </div>
+          <h1 style={{ fontFamily: "Fraunces, serif", fontSize: "clamp(40px, 7vw, 72px)", fontWeight: 600, margin: 0, lineHeight: 1 }}>
+            Paris, drawn<br />as one line.
+          </h1>
+          <p style={{ maxWidth: 520, color: "#B9C4BB", fontSize: 16, marginTop: 16, lineHeight: 1.5 }}>
+            Pick the stops you care about. We route them into a single day, and surface the closest hotel to each one — so you book where you'll actually be walking.
+          </p>
+        </div>
+      </header>
+
+      <main style={{ maxWidth: 1040, margin: "0 auto", padding: "40px 24px 80px", display: "grid", gridTemplateColumns: "1fr", gap: 40 }}>
+        <section>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+            <SectionLabel n="01" title="Choose your stops" />
+            <DataStatusBadge status={dataStatus} />
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginTop: 16 }}>
+            {attractions.map((a) => {
+              const active = selected.includes(a.id);
+              return (
+                <button
+                  key={a.id}
+                  onClick={() => toggle(a.id)}
+                  style={{
+                    padding: "10px 16px", borderRadius: 999,
+                    border: active ? "1px solid #C89B4A" : "1px solid #2A4A40",
+                    background: active ? "#C89B4A" : "transparent",
+                    color: active ? "#122A24" : "#F4ECDA",
+                    fontFamily: "Inter, sans-serif", fontSize: 14, fontWeight: 500,
+                    cursor: "pointer", transition: "all .15s ease",
+                  }}
+                >
+                  {a.name} <span style={{ opacity: 0.6, fontSize: 12 }}>· {a.hrs}</span>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+
+        <section>
+          <SectionLabel n="02" title={`Your route${routePoints.length ? ` — ${routePoints.length} stops, ~${totalHrs.toFixed(1)}h` : ""}`} />
+          <div style={{ marginTop: 16, background: "#122A24", border: "1px solid #1B3830", borderRadius: 16, padding: 8, overflow: "hidden" }}>
+            <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ display: "block" }}>
+              <defs>
+                <filter id="glow">
+                  <feGaussianBlur stdDeviation="3" result="blur" />
+                  <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+                </filter>
+              </defs>
+              {allProjected.filter((p) => !selected.includes(p.id)).map((p) => (
+                <circle key={p.id} cx={p.x} cy={p.y} r={5} fill="#2A4A40" />
+              ))}
+              {pathD && <path d={pathD} fill="none" stroke="#4FA88F" strokeWidth={3} strokeLinecap="round" filter="url(#glow)" opacity={0.9} />}
+              {routePoints.map((p, i) => (
+                <g key={p.id}>
+                  <circle cx={p.x} cy={p.y} r={14} fill="#C89B4A" />
+                  <text x={p.x} y={p.y + 5} textAnchor="middle" fontFamily="'JetBrains Mono', monospace" fontSize={12} fontWeight={700} fill="#122A24">{i + 1}</text>
+                  <text x={p.x} y={p.y - 22} textAnchor="middle" fontFamily="Inter, sans-serif" fontSize={13} fontWeight={600} fill="#F4ECDA">{p.name}</text>
+                </g>
+              ))}
+            </svg>
+          </div>
+          {routePoints.length === 0 && <p style={{ color: "#6E8079", fontSize: 14, marginTop: 12 }}>Select a stop above to start drawing your route.</p>}
+        </section>
+
+        <section>
+          <SectionLabel n="03" title="Hotels near your route" />
+          <div style={{ display: "flex", gap: 8, marginTop: 16, marginBottom: 20 }}>
+            {["All", "Budget", "Mid", "Luxury"].map((t) => (
+              <button
+                key={t}
+                onClick={() => setTierFilter(t)}
+                style={{
+                  padding: "6px 14px", borderRadius: 999, fontSize: 13, fontFamily: "Inter, sans-serif",
+                  border: tierFilter === t ? "1px solid #F4ECDA" : "1px solid #2A4A40",
+                  background: tierFilter === t ? "#1B3830" : "transparent",
+                  color: "#F4ECDA", cursor: "pointer",
+                }}
+              >{t}</button>
+            ))}
+          </div>
+          {suggestions.length === 0 && <p style={{ color: "#6E8079", fontSize: 14 }}>No stops selected yet — pick some above to see nearby hotels.</p>}
+          <div style={{ display: "grid", gap: 12 }}>
+            {suggestions.map(({ stop, hotel }) => (
+              <div key={hotel.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#122A24", border: "1px solid #1B3830", borderRadius: 12, padding: "16px 20px" }}>
+                <div>
+                  <div style={{ fontSize: 12, color: "#6FBF9A", fontFamily: "'JetBrains Mono', monospace", marginBottom: 4 }}>NEAR {stop.name.toUpperCase()}</div>
+                  <div style={{ fontFamily: "Fraunces, serif", fontSize: 20, fontWeight: 600 }}>{hotel.name}</div>
+                  <div style={{ fontSize: 13, color: "#B9C4BB", marginTop: 4 }}>
+                    <span style={{ color: TIER_COLOR[hotel.tier], fontWeight: 600 }}>{hotel.tier}</span> · {hotel.hood} arrondissement · ★ {hotel.rating}
+                  </div>
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 20, fontWeight: 600 }}>€{hotel.price}</div>
+                  <div style={{ fontSize: 11, color: "#6E8079", marginBottom: 8 }}>per night</div>
+                  <a href={buildBookingLink(hotel.name)} target="_blank" rel="noreferrer"
+                    style={{ display: "inline-block", background: "#C89B4A", color: "#122A24", fontSize: 13, fontWeight: 600, padding: "8px 14px", borderRadius: 8, textDecoration: "none" }}
+                  >Check rates →</a>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <footer style={{ borderTop: "1px solid #1B3830", paddingTop: 24, fontSize: 12, color: "#4E5F58" }}>
+          Attractions are pulled live from OpenStreetMap. Hotel prices are still demo data — swap in the Booking.com Affiliate API for live rates. "Check rates" links carry your Booking.com affiliate ID — every booking earns commission.
+        </footer>
+      </main>
+    </div>
+  );
+}
+
+function DataStatusBadge({ status }) {
+  const map = {
+    loading: { text: "Loading live spots…", color: "#6E8079" },
+    live: { text: "● Live · OpenStreetMap", color: "#6FBF9A" },
+    fallback: { text: "● Demo data (live fetch unavailable)", color: "#D97A63" },
+  };
+  const s = map[status];
+  return <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: s.color }}>{s.text}</span>;
+}
+
+function SectionLabel({ n, title }) {
+  return (
+    <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
+      <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12, color: "#4FA88F" }}>{n}</span>
+      <h2 style={{ fontFamily: "Fraunces, serif", fontSize: 24, fontWeight: 600, margin: 0 }}>{title}</h2>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+  </html>
+  
